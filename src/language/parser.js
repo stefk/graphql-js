@@ -51,6 +51,8 @@ import type {
   InputObjectTypeDefinition,
 
   TypeExtensionDefinition,
+
+  Comment
 } from './ast';
 
 import {
@@ -94,6 +96,10 @@ import {
   INPUT_OBJECT_TYPE_DEFINITION,
 
   TYPE_EXTENSION_DEFINITION,
+
+  LEADING_COMMENT,
+  TRAILING_COMMENT,
+  DETACHED_COMMENT
 } from './kinds';
 
 
@@ -114,6 +120,14 @@ export type ParseOptions = {
    * disables that behavior for performance or testing.
    */
   noSource?: boolean,
+
+  /**
+   * By default, the parser ignores comments present in the source.
+   * This configuration flag makes it include them in a separate node
+   * list so that third-party tools can take advantage of the information
+   * they contain.
+   */
+  includeComments?: boolean
 }
 
 /**
@@ -164,16 +178,24 @@ function parseName(parser: Parser): Name {
  */
 function parseDocument(parser: Parser): Document {
   const start = parser.token.start;
-
   const definitions = [];
   do {
     definitions.push(parseDefinition(parser));
   } while (!skip(parser, TokenKind.EOF));
 
+  if (!parser.options.includeComments) {
+    return {
+      kind: DOCUMENT,
+      definitions,
+      loc: loc(parser, start)
+    };
+  }
+
   return {
     kind: DOCUMENT,
     definitions,
-    loc: loc(parser, start)
+    loc: loc(parser, start),
+    comments: parser.comments || []
   };
 }
 
@@ -898,7 +920,6 @@ function parseTypeExtensionDefinition(parser: Parser): TypeExtensionDefinition {
   };
 }
 
-
 // Core parsing utility functions
 
 type Parser = {
@@ -906,21 +927,75 @@ type Parser = {
   options: ParseOptions,
   prevEnd: number,
   token: Token,
-  _lexToken: () => Token,
+  comments?: Array<Comment>,
+  _lexToken: () => Token
 };
 
 /**
  * Returns the parser object that is used to store state throughout the
  * process of parsing.
+ *
+ * If the `includeComments` option flag is set to true, comments will
+ * be collected in a dedicated `comments` property of the parser.
  */
 function makeParser(source: Source, options: ParseOptions): Parser {
   const _lexToken = lex(source);
-  return {
-    _lexToken,
+  const baseParser = {
     source,
     options,
     prevEnd: 0,
     token: _lexToken(),
+    _lexToken
+  };
+
+  if (!options.includeComments) {
+    return baseParser;
+  }
+
+  const comments = [];
+  const _lexComment = lex(source, false);
+  const _lex = () => {
+    const token = _lexComment();
+
+    if (token.kind === TokenKind.COMMENT_LEADING ||
+        token.kind === TokenKind.COMMENT_TRAILING ||
+        token.kind === TokenKind.COMMENT_DETACHED) {
+      comments.push(makeCommentNode(baseParser, token));
+      return _lex();
+    }
+
+    return token;
+  };
+
+  return {
+    source,
+    options,
+    prevEnd: 0,
+    comments,
+    token: _lex(),
+    _lexToken: _lex
+  };
+}
+
+/*
+ * Builds a comment node from a raw token.
+ */
+function makeCommentNode(parser: Parser, token: Token): Comment {
+  let type = DETACHED_COMMENT;
+
+  if (token.kind === TokenKind.COMMENT_LEADING) {
+    type = LEADING_COMMENT;
+  } else if (token.kind === TokenKind.COMMENT_TRAILING) {
+    type = TRAILING_COMMENT;
+  }
+
+  parser.prevEnd = token.end;
+
+  return {
+    kind: 'Comment',
+    type,
+    value: token.value || '',
+    loc: loc(parser, token.start)
   };
 }
 

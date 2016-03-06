@@ -57,6 +57,7 @@ export type Node = Name
                  | EnumValueDefinition
                  | InputObjectTypeDefinition
                  | TypeExtensionDefinition
+                 | Comment
 
 // Name
 
@@ -72,6 +73,7 @@ export type Document = {
   kind: 'Document';
   loc?: ?Location;
   definitions: Array<Definition>;
+  comments?: Array<Comment>;
 }
 
 export type Definition = OperationDefinition
@@ -331,4 +333,13 @@ export type TypeExtensionDefinition = {
   kind: 'TypeExtensionDefinition';
   loc?: ?Location;
   definition: ObjectTypeDefinition;
+}
+
+// Comment
+
+export type Comment = {
+  kind: 'Comment';
+  type: string;
+  loc?: ?Location;
+  value: string;
 }

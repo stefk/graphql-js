@@ -32,15 +32,19 @@ type Lexer = (resetPosition?: number) => Token;
  * EOF, after which the lexer will repeatedly return EOF tokens whenever
  * called.
  *
- * The argument to the lexer function is optional, and can be used to
- * rewind or fast forward the lexer to a new position in the source.
+ * The `source` argument can be used to rewind or fast forward the lexer
+ * to a new position in the source.
+ *
+ * The `skipComments` argument indicates whether comment tokens should be
+ * ignored (defaults to true).
  */
-export function lex(source: Source): Lexer {
+export function lex(source: Source, skipComments?: bool): Lexer {
   let prevPosition = 0;
   return function nextToken(resetPosition) {
     const token = readToken(
       source,
-      resetPosition === undefined ? prevPosition : resetPosition
+      resetPosition === undefined ? prevPosition : resetPosition,
+      skipComments === undefined ? true : skipComments
     );
     prevPosition = token.end;
     return token;
@@ -69,6 +73,9 @@ export const TokenKind = {
   INT: 16,
   FLOAT: 17,
   STRING: 18,
+  COMMENT_LEADING: 19,
+  COMMENT_TRAILING: 20,
+  COMMENT_DETACHED: 21
 };
 
 /**
@@ -106,6 +113,9 @@ tokenDescription[TokenKind.NAME] = 'Name';
 tokenDescription[TokenKind.INT] = 'Int';
 tokenDescription[TokenKind.FLOAT] = 'Float';
 tokenDescription[TokenKind.STRING] = 'String';
+tokenDescription[TokenKind.COMMENT_LEADING] = 'Leading comment';
+tokenDescription[TokenKind.COMMENT_TRAILING] = 'Trailing comment';
+tokenDescription[TokenKind.COMMENT_DETACHED] = 'Detached comment';
 
 const charCodeAt = String.prototype.charCodeAt;
 const slice = String.prototype.slice;
@@ -136,15 +146,19 @@ function printCharCode(code) {
 /**
  * Gets the next token from the source starting at the given position.
  *
- * This skips over whitespace and comments until it finds the next lexable
- * token, then lexes punctuators immediately or calls the appropriate helper
- * function for more complicated tokens.
+ * This skips over whitespace and optionally comments until it finds the next
+ * lexable token, then lexes punctuators immediately or calls the appropriate
+ * helper function for more complicated tokens.
  */
-function readToken(source: Source, fromPosition: number): Token {
+function readToken(
+  source: Source,
+  fromPosition: number,
+  skipComments: bool
+): Token {
   const body = source.body;
   const bodyLength = body.length;
 
-  const position = positionAfterWhitespace(body, fromPosition);
+  const position = positionAfterWhitespace(body, fromPosition, skipComments);
 
   if (position >= bodyLength) {
     return makeToken(TokenKind.EOF, position, position);
@@ -214,6 +228,8 @@ function readToken(source: Source, fromPosition: number): Token {
       return readNumber(source, position, code);
     // "
     case 34: return readString(source, position);
+    // #
+    case 35: return readComment(source, position);
   }
 
   throw syntaxError(
@@ -225,10 +241,14 @@ function readToken(source: Source, fromPosition: number): Token {
 
 /**
  * Reads from body starting at startPosition until it finds a non-whitespace
- * or commented character, then returns the position of that character for
- * lexing.
+ * or optionally a non-commented character, then returns the position of that
+ * character for lexing.
  */
-function positionAfterWhitespace(body: string, startPosition: number): number {
+function positionAfterWhitespace(
+  body: string,
+  startPosition: number,
+  skipComments: bool
+): number {
   const bodyLength = body.length;
   let position = startPosition;
   while (position < bodyLength) {
@@ -248,7 +268,7 @@ function positionAfterWhitespace(body: string, startPosition: number): number {
     ) {
       ++position;
     // Skip comments
-    } else if (code === 35) { // #
+    } else if (skipComments && code === 35) { // #
       ++position;
       while (
         position < bodyLength &&
@@ -466,12 +486,7 @@ function readName(source, position) {
   while (
     end !== bodyLength &&
     (code = charCodeAt.call(body, end)) !== null &&
-    (
-      code === 95 || // _
-      code >= 48 && code <= 57 || // 0-9
-      code >= 65 && code <= 90 || // A-Z
-      code >= 97 && code <= 122 // a-z
-    )
+    isNameCharacter(code)
   ) {
     ++end;
   }
@@ -481,4 +496,123 @@ function readName(source, position) {
     end,
     slice.call(body, position, end)
   );
+}
+
+/**
+ * Reads a comment from the source and produces a comment token of one of
+ * these three categories:
+ *
+ *   - leading:     The comment stands on its own line(s) and precedes
+ *                  immediately a line starting with a GraphQL name.
+ *   - trailing:    The comment is on the same line than a lexical token.
+ *   - detached:    The comment is neither leading nor trailing. It might
+ *                  be an isolated comment block or a comment preceding a
+ *                  punctuator on its own line.
+ *
+ * Additionally, after reading a non-trailing comment from the current line,
+ * this function peeks at the next line and attempts to read a new comment.
+ * If it succeeds, the two comment lines are merged into a single token.
+ * This process is repeated recursively, thus exhausting multiline comments.
+ */
+function readComment(source, start) {
+  const body = source.body;
+  let comment = readLineComment(source, start);
+
+  if (comment.kind === TokenKind.COMMENT_TRAILING) {
+    return comment;
+  }
+
+  let position = comment.end;
+  let code = 0;
+
+  while (
+    position < body.length &&
+    (code = charCodeAt.call(body, position)) !== null &&
+    (code === 0x0009 || code === 0x0020) // tab or space
+  ) {
+    ++position;
+  }
+
+  if (code === 35) { // #
+    const nextComment = readComment(source, position);
+    const previousValue = comment.value || '';
+    const nextValue = nextComment.value || '';
+    comment = makeToken(
+      nextComment.kind,
+      comment.start,
+      nextComment.end,
+      previousValue + '\n' + nextValue
+    );
+  } else if (isNameCharacter(code)) {
+    comment = makeToken(
+      TokenKind.COMMENT_LEADING,
+      comment.start,
+      comment.end,
+      comment.value || ''
+    );
+  }
+
+  return comment;
+}
+
+/**
+ * Reads a single-line comment from the source. If the comment is preceded by
+ * a non-whitespace character on the same line, it is marked as trailing,
+ * otherwise it is considered detached.
+ */
+function readLineComment(source, start) {
+  const body = source.body;
+  let kind = TokenKind.COMMENT_DETACHED;
+  let anteriorPosition = start - 1;
+  let code = 0;
+
+  while (
+    anteriorPosition > 0 &&
+    (code = charCodeAt.call(body, anteriorPosition)) !== null &&
+    code !== 0x000A && code !== 0x000D // not a line terminator
+  ) {
+    // not a tab, space or comma
+    if (code !== 0x0009 && code !== 0x0020 && code !== 0x002C) {
+      kind = TokenKind.COMMENT_TRAILING;
+      break;
+    }
+    --anteriorPosition;
+  }
+
+  let position = start + 1;
+
+  while (
+    position < body.length &&
+    (code = charCodeAt.call(body, position)) !== null &&
+    code !== 0x000A && code !== 0x000D // not a line terminator
+  ) {
+    // not a source character
+    if (code < 0x0020 && code !== 0x0009) {
+      throw syntaxError(
+        source,
+        position,
+        `Invalid character within Comment: ${printCharCode(code)}.`
+      );
+    }
+
+    ++position;
+  }
+
+  return makeToken(
+    kind,
+    start + 1,
+    position + 1,
+    slice.call(body, start + 1, position)
+  );
+}
+
+/**
+ * Returns whether a code corresponds to an alphanumeric or
+ * underscore character.
+ */
+function isNameCharacter(charCode) {
+  return charCode === 95 || // _
+    charCode >= 48 && charCode <= 57 || // 0-9
+    charCode >= 65 && charCode <= 90 || // A-Z
+    charCode >= 97 && charCode <= 122; // a-z
 }

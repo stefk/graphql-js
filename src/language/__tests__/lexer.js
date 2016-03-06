@@ -582,4 +582,96 @@ describe('Lexer', () => {
       'Syntax Error GraphQL (1:3) Invalid number, expected digit but got: "b".'
     );
   });
+
+  it('can lex and categorize comments', () => {
+    const lexComment = (source, times = 1) => {
+      const lexer = lex(new Source(source), false);
+      let count = times;
+      let token;
+      do {
+        token = lexer();
+        --count;
+      } while (count);
+
+      return token;
+    };
+
+    expect(
+      lexComment('# simple comment')
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_DETACHED,
+      start: 1,
+      end: 17,
+      value: ' simple comment'
+    });
+
+    expect(
+      lexComment('# multiline \n # comment')
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_DETACHED,
+      start: 1,
+      end: 24,
+      value: ' multiline \n comment'
+    });
+
+    expect(
+      lexComment('# detached comment \n\n name')
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_DETACHED,
+      start: 1,
+      end: 20,
+      value: ' detached comment '
+    });
+
+    expect(
+      lexComment('# leading comment \n name')
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_LEADING,
+      start: 1,
+      end: 19,
+      value: ' leading comment '
+    });
+
+    expect(
+      lexComment('# leading \n # multiline comment \n name')
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_LEADING,
+      start: 1,
+      end: 33,
+      value: ' leading \n multiline comment '
+    });
+
+    expect(
+      lexComment('name # trailing comment', 2)
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_TRAILING,
+      start: 6,
+      end: 24,
+      value: ' trailing comment'
+    });
+
+    expect(
+      lexComment('name # trailing comment \n # followed by another comment', 2)
+    ).to.deep.equal({
+      kind: TokenKind.COMMENT_TRAILING,
+      start: 6,
+      end: 25,
+      value: ' trailing comment '
+    });
+  });
+
+  it('can report useful errors about comments', () => {
+    const lexCommentErr = source => lex(new Source(source), false);
+    expect(
+      lexCommentErr('#contains unescaped \u0007 control char')
+    ).to.throw(
+      'Syntax Error GraphQL (1:21) Invalid character within Comment: "\\u0007".'
+    );
+
+    expect(
+      lexCommentErr('#  null-byte is not \u0000 end of file ')
+    ).to.throw(
+      'Syntax Error GraphQL (1:21) Invalid character within Comment: "\\u0000".'
+    );
+  });
 });

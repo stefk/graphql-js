@@ -60,3 +60,9 @@ export const ENUM_TYPE_DEFINITION = 'EnumTypeDefinition';
 export const ENUM_VALUE_DEFINITION = 'EnumValueDefinition';
 export const INPUT_OBJECT_TYPE_DEFINITION = 'InputObjectTypeDefinition';
 export const TYPE_EXTENSION_DEFINITION = 'TypeExtensionDefinition';
+
+// Comments
+
+export const LEADING_COMMENT = 'LeadingComment';
+export const TRAILING_COMMENT = 'TrailingComment';
+export const DETACHED_COMMENT = 'DetachedComment';
